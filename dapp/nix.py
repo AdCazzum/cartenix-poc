@@ -13,6 +13,16 @@
 from os import environ
 import logging
 import requests
+import subprocess
+import json
+
+def hex2str(hex):
+    """Decode a hex string prefixed with "0x" into a UTF-8 string"""
+    return bytes.fromhex(hex[2:]).decode("utf-8")
+
+def str2hex(str):
+    """Encode a string as a hex string, adding the "0x" prefix"""
+    return "0x" + str.encode("utf-8").hex()
 
 logging.basicConfig(level="INFO")
 logger = logging.getLogger(__name__)
@@ -23,9 +33,31 @@ logger.info(f"HTTP rollup_server url is {rollup_server}")
 def handle_advance(data):
     logger.info(f"Received advance request data {data}")
     logger.info("Adding notice")
-    notice = {"payload": data["payload"]}
-    response = requests.post(rollup_server + "/notice", json=notice)
+
+    #FIXME: the path of the nix bin
+    version = subprocess.check_output("/nix/store/2qzfvsqb9afhb73cc3yfg8hk2xpxcy47-nix-2.16.0pre20230512_dirty-riscv64-unknown-linux-gnu/bin/nix --version", shell=True, stderr=subprocess.STDOUT)
+
+    logger.info("handle_advance nix version")
+
+    # Nix does something :)
+    subprocess.check_output("/nix/store/2qzfvsqb9afhb73cc3yfg8hk2xpxcy47-nix-2.16.0pre20230512_dirty-riscv64-unknown-linux-gnu/bin/nix build /flake", shell=True, stderr=subprocess.STDOUT)
+    path = subprocess.check_output("readlink result ./result", shell=True, stderr=subprocess.STDOUT)
+    content = subprocess.check_output("cat ./result", shell=True, stderr=subprocess.STDOUT)
+
+    notice = {"payload": str2hex(json.dumps({
+            "version": version.decode(),
+            "path": path.decode(), 
+            "content": content.decode()
+        }))
+    }
+
+    notice_but_is_a_string = (notice)
+
+    logger.info(f"Adding notice log {notice_but_is_a_string}")
+    
+    response = requests.post(rollup_server + "/notice", json=notice_but_is_a_string)
     logger.info(f"Received notice status {response.status_code} body {response.content}")
+
     return "accept"
 
 def handle_inspect(data):
@@ -42,6 +74,7 @@ handlers = {
 }
 
 finish = {"status": "accept"}
+rollup_address = None
 
 while True:
     logger.info("Sending finish")
@@ -52,6 +85,11 @@ while True:
     else:
         rollup_request = response.json()
         data = rollup_request["data"]
-        
+        if "metadata" in data:
+            metadata = data["metadata"]
+            if metadata["epoch_index"] == 0 and metadata["input_index"] == 0:
+                rollup_address = metadata["msg_sender"]
+                logger.info(f"Captured rollup address: {rollup_address}")
+                continue
         handler = handlers[rollup_request["request_type"]]
         finish["status"] = handler(rollup_request["data"])
